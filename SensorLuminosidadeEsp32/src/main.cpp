@@ -23,7 +23,7 @@ const char* password = "SUA_SENHA"; // Insira a senha da rede Wi-Fi
 #define NTC_PIN 12 // Pino analógico onde o NTC está conectado
 
 // Pino para leitura da tensão
-#define VOLTAGE_PIN 13
+#define VOLTAGE_PIN 36
 
 //Definindo resistores para o divisor de tensao
 const float R1 = 34000.0;//33k
@@ -34,19 +34,18 @@ unsigned long lastReadTime = 0; // Armazena o último momento de leitura dos sen
 unsigned long readInterval = 100; // Intervalo para leitura dos sensores (em milissegundos)
 
 float lerNTC(int pin) {
-  int rawValue = analogRead(pin); // Lê o valor analógico do pino
-  float resistance = (4095.0 / rawValue) - 1.0; // Cálculo da resistência
-  resistance = 10000.0 / resistance; // NTC de 10k (NTC10k)
-  
-  float temperature = resistance / 10000.0; // R / Ro (onde Ro = 10k)
-  temperature = log(temperature); // ln(R/Ro)
-  temperature = temperature / 3650.0; // 1/B (onde B é a constante de beta)
-  temperature += 1.0 / (25.0 + 273.15); // 1/To (25°C em Kelvin)
-  temperature = 1.0 / temperature; // Inverso da soma
-  temperature -= 273.15; // Converte de Kelvin para Celsius
-  return temperature; // Retorna a temperatura em Celsius
+  int rawValue = analogRead(pin); 
+  if (rawValue == 0) return -999; // Caso erro na leitura, retorna -999
+  float resistance = (4095.0 / rawValue) - 1.0; 
+  resistance = 10000.0 / resistance; 
+  float temperature = resistance / 10000.0; 
+  temperature = log(temperature); 
+  temperature = temperature / 3650.0; 
+  temperature += 1.0 / (25.0 + 273.15); 
+  temperature = 1.0 / temperature; 
+  temperature -= 273.15; 
+  return temperature; 
 }
-
 float lerTensao(int pin) {
   int rawValue = analogRead(pin); // Lê o valor analógico do pino
   float voltage = rawValue * (3.3 / 4095.0); // Converte o valor lido para tensão
@@ -56,11 +55,16 @@ float lerTensao(int pin) {
 
 void conectarWiFi() {
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
+  int tentativas = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativas < 20) { 
     delay(500);
+    tentativas++;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Falha ao conectar no Wi-Fi.");
   }
 }
- void imprimirMensagem(float mensagem[]){
+void imprimirMensagem(float mensagem[]){
   Serial.print("LDRs: ");
   Serial.print(mensagem[0]);
   Serial.print(" ");
