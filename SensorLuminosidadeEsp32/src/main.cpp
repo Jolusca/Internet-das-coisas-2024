@@ -1,9 +1,15 @@
 #include <Arduino.h>
 #include <WiFi.h> // Biblioteca para conexão Wi-Fi
+//#include <AzureIoTHub.h> 
+//#include <mqtt_client.h>
+//#include <AzureIoTProtocol_MQTT.h>
+//#include <HTTPClient.h>  // Biblioteca para comunicação HTTP
 
 // Configurações de Wi-Fi
 const char* ssid = "SEU_SSID"; // Insira o nome da rede Wi-Fi
 const char* password = "SUA_SENHA"; // Insira a senha da rede Wi-Fi
+const char* connectionString = "CHAVE_DE_CONEXAO_PRIMARIA_DO_DISPOSITIVO"; // Coloque aqui a chave de conexão primária
+//IOTHUB_DEVICE_CLIENT_LL_HANDLE deviceHandle;
 
 // Definindo os pinos dos LDRs e o limiar de sombra
 #define LDR_PIN1 34 // Pino de entrada analógica para o LDR1
@@ -46,6 +52,7 @@ float lerNTC(int pin) {
   temperature -= 273.15; 
   return temperature; 
 }
+
 float lerTensao(int pin) {
   int rawValue = analogRead(pin); // Lê o valor analógico do pino
   float voltage = rawValue * (3.3 / 4095.0); // Converte o valor lido para tensão
@@ -64,6 +71,41 @@ void conectarWiFi() {
     Serial.println("Falha ao conectar no Wi-Fi.");
   }
 }
+
+/*void enviarDadosHTTP(float mensagem[]) {
+  HTTPClient http;
+
+  String url = "https://<nome_do_seu_dispositivo>.azure-devices.net/devices/<ID_DO_SEU_DISPOSITIVO>/messages?api-version=2018-06-30";
+  http.begin(url);
+  
+  // Definir o header de autenticação (utilizando a chave do dispositivo)
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", connectionString);
+
+  // Criar a payload do JSON
+  String payload = "{";
+  payload += "\"ldr1\":" + String(mensagem[0]) + ",";
+  payload += "\"ldr2\":" + String(mensagem[1]) + ",";
+  payload += "\"ldr3\":" + String(mensagem[2]) + ",";
+  payload += "\"ldr4\":" + String(mensagem[3]) + ",";
+  payload += "\"temperatura\":" + String(mensagem[4], 2) + ",";
+  payload += "\"tensao\":" + String(mensagem[5], 2);
+  payload += "}";
+
+  // Enviar a solicitação POST com os dados
+  int httpCode = http.POST(payload);
+
+  if (httpCode > 0) {
+    Serial.println("Dados enviados com sucesso!");
+    Serial.println(httpCode);
+  } else {
+    Serial.println("Erro ao enviar os dados");
+    Serial.println(httpCode);
+  }
+
+  http.end();
+}*/
+
 void imprimirMensagem(float mensagem[]){
   Serial.print("LDRs: ");
   Serial.print(mensagem[0]);
