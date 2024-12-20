@@ -1,18 +1,19 @@
 #include <Arduino.h>
-#include <WiFi.h> // Biblioteca para conexão Wi-Fi
-//#include <AzureIoTHub.h> 
-//#include <mqtt_client.h>
-//#include <AzureIoTProtocol_MQTT.h>
-//#include <HTTPClient.h>  // Biblioteca para comunicação HTTP
+#include "secrets.h"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include "WiFi.h" // Biblioteca para conexão Wi-Fi
 
 // Configurações de Wi-Fi
-const char* ssid = "SEU_SSID"; // Insira o nome da rede Wi-Fi
-const char* password = "SUA_SENHA"; // Insira a senha da rede Wi-Fi
-const char* connectionString = "CHAVE_DE_CONEXAO_PRIMARIA_DO_DISPOSITIVO"; // Coloque aqui a chave de conexão primária
-//IOTHUB_DEVICE_CLIENT_LL_HANDLE deviceHandle;
+//const char* ssid = "Jlucas"; // Insira o nome da rede Wi-Fi
+//const char* password = "jlucas2002"; // Insira a senha da rede Wi-Fi
+
+#define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
+#define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
 
 // Definindo os pinos dos LDRs e o limiar de sombra
-#define LDR_PIN1 34 // Pino de entrada analógica para o LDR1
+#define LDR_PIN1 34 // Pino de entrada analógica para o LDR1 era 34
 #define LDR_PIN2 35 // Pino de entrada analógica para o LDR2
 #define LDR_PIN3 32 // Pino de entrada analógica para o LDR3
 #define LDR_PIN4 33 // Pino de entrada analógica para o LDR4
@@ -26,18 +27,95 @@ const char* connectionString = "CHAVE_DE_CONEXAO_PRIMARIA_DO_DISPOSITIVO"; // Co
 //#define LED_TEMP 13 // Novo LED que será ativado caso a temperatura ultrapasse 50 graus
 
 // Definição do pino do sensor NTC (termistor)
-#define NTC_PIN 12 // Pino analógico onde o NTC está conectado
+#define NTC_PIN 39 // Pino analógico onde o NTC está conectado
 
 // Pino para leitura da tensão
 #define VOLTAGE_PIN 36
 
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
+
 //Definindo resistores para o divisor de tensao
 const float R1 = 34000.0;//33k
 const float R2 = 9800.0;//10k
+float mensagem[6]; // Vetor para os valores LDRs, Temperatura e Tensão
 
 // Variáveis para controle de tempo
 unsigned long lastReadTime = 0; // Armazena o último momento de leitura dos sensores
 unsigned long readInterval = 100; // Intervalo para leitura dos sensores (em milissegundos)
+
+void conectarWiFi() {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.println("Conectando ao Wi-Fi...");
+    unsigned long startAttemptTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) { // Tenta por 10 segundos
+        delay(500);
+        Serial.print(".");
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("\nFalha ao conectar ao Wi-Fi!");
+        return;
+    }
+    Serial.println("\nConectado ao Wi-Fi!");
+}
+
+
+void connectAWS() {
+  conectarWiFi();
+
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+  
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+  //client.setCallback(messageHandler);
+  
+  Serial.println("Conectando ao AWS IoT...");
+while (!client.connect(THINGNAME)) {
+  Serial.print("Falha ao conectar. Estado: ");
+  Serial.println(client.state());
+  delay(1000);
+}
+  
+  if (!client.connected()) {
+    Serial.println("Falha ao conectar no AWS IoT!");
+    return;
+  }
+  
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+  Serial.println("Conectado ao AWS IoT e inscrito no tópico!");
+}
+
+void publishMessage(float mensagem[]) {
+  StaticJsonDocument<200> doc; // Cria o documento JSON
+  
+  // Atribui valores aos campos do JSON
+  doc["LDR1"] = mensagem[0];
+  doc["LDR2"] = mensagem[1];
+  doc["LDR3"] = mensagem[2];
+  doc["LDR4"] = mensagem[3];
+  doc["Temperatura"] = mensagem[4];
+  doc["Tensao"] = mensagem[5];
+
+  char jsonBuffer[512]; // Buffer para armazenar o JSON gerado
+  serializeJson(doc, jsonBuffer); // Converte o JSON para string e armazena no buffer
+
+  // Publica o JSON no tópico MQTT
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer); 
+  Serial.print("Mensagem enviada para o AWS: ");
+  Serial.println(jsonBuffer); // Imprime o JSON enviado para o console
+}
+
+//metodo para receber mensagens da aws
+void messageHandler(char* topic, byte* payload, unsigned int length){
+  Serial.print("incoming: ");
+  Serial.println(topic);
+ 
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+  Serial.println(message);
+}
 
 float lerNTC(int pin) {
   int rawValue = analogRead(pin); 
@@ -60,51 +138,6 @@ float lerTensao(int pin) {
   return realVoltage;
 }
 
-void conectarWiFi() {
-  WiFi.begin(ssid, password);
-  int tentativas = 0;
-  while (WiFi.status() != WL_CONNECTED && tentativas < 20) { 
-    delay(500);
-    tentativas++;
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Falha ao conectar no Wi-Fi.");
-  }
-}
-
-/*void enviarDadosHTTP(float mensagem[]) {
-  HTTPClient http;
-
-  String url = "https://<nome_do_seu_dispositivo>.azure-devices.net/devices/<ID_DO_SEU_DISPOSITIVO>/messages?api-version=2018-06-30";
-  http.begin(url);
-  
-  // Definir o header de autenticação (utilizando a chave do dispositivo)
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", connectionString);
-
-  // Criar a payload do JSON
-  String payload = "{";
-  payload += "\"ldr1\":" + String(mensagem[0]) + ",";
-  payload += "\"ldr2\":" + String(mensagem[1]) + ",";
-  payload += "\"ldr3\":" + String(mensagem[2]) + ",";
-  payload += "\"ldr4\":" + String(mensagem[3]) + ",";
-  payload += "\"temperatura\":" + String(mensagem[4], 2) + ",";
-  payload += "\"tensao\":" + String(mensagem[5], 2);
-  payload += "}";
-
-  // Enviar a solicitação POST com os dados
-  int httpCode = http.POST(payload);
-
-  if (httpCode > 0) {
-    Serial.println("Dados enviados com sucesso!");
-    Serial.println(httpCode);
-  } else {
-    Serial.println("Erro ao enviar os dados");
-    Serial.println(httpCode);
-  }
-
-  http.end();
-}*/
 
 void imprimirMensagem(float mensagem[]){
   Serial.print("LDRs: ");
@@ -122,8 +155,9 @@ void imprimirMensagem(float mensagem[]){
   Serial.println("V");
 
   //atraso de 2 seg
-  delay(2000);
- }
+  //delay(2000);
+}
+
 void setup() {
   // Conecta ao Wi-Fi
   //conectarWiFi();
@@ -149,11 +183,13 @@ void setup() {
 
   // Inicializa a comunicação serial para depuração
   Serial.begin(115200);
+  connectAWS();
 }
 
 void loop() {
   if (millis() - lastReadTime >= readInterval) {
-    lastReadTime = millis(); 
+
+    lastReadTime = millis();  
 
     int ldrValue1 = analogRead(LDR_PIN1);
     int ldrValue2 = analogRead(LDR_PIN2);
@@ -196,14 +232,19 @@ void loop() {
       digitalWrite(LED_PIN4, LOW);
     }
 
-    // Verifica se a temperatura está acima de 50 graus Celsius
-    /*if (temperatura > 50.0) { 
-      digitalWrite(LED_TEMP, HIGH); // Liga o LED de temperatura
-    } else {
-      digitalWrite(LED_TEMP, LOW); // Desliga o LED de temperatura
-    }*/
+  // Verifica se a temperatura está acima de 50 graus Celsius
+  /*if (temperatura > 50.0) { 
+    digitalWrite(LED_TEMP, HIGH); // Liga o LED de temperatura
+  } else {
+    digitalWrite(LED_TEMP, LOW); // Desliga o LED de temperatura
+  }*/
 
-    // Imprime o vetor no console serial para depuração
-    imprimirMensagem(mensagem);
+  // Imprime o vetor no console serial para depuração
+  imprimirMensagem(mensagem);
+
+  //manda a mensgem para azure
+  publishMessage(mensagem);
+  client.loop();
+  delay(4000);
   }
 }
