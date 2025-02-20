@@ -2,165 +2,150 @@
 #include <IOXhop_FirebaseESP32.h>                           
 #include <ArduinoJson.h>                   
 #include <ESP32Servo.h>
+#include <time.h> 
+#include <Ticker.h> 
+#include <Arduino.h>
 
 #define WIFI_SSID "Fazendo o L"                   
 #define WIFI_PASSWORD "aaa12345"         
 #define FIREBASE_HOST "https://gesa-project-default-rtdb.firebaseio.com/"    
 #define FIREBASE_AUTH "ETBsNtyQDec90XA0axzgoZn4OonLDc9wFmY1wbWc"   
 
-// Definições de Tópicos e Sensores
-#define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
-#define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
 #define LDR_PIN1 34
 #define LDR_PIN2 35
 #define LDR_PIN3 32
 #define LDR_PIN4 33
-#define THRESHOLD 600
 #define NTC_PIN 39
 #define VOLTAGE_PIN 36
 #define SERVO_PIN 14
+#define LED_PIN 2
 
+const float R1 = 34000.0; // 33k
+const float R2 = 9800.0;  // 10k
+
+#define THRESHOLD 600
+#define uS_TO_S_FACTOR 1000000  
+#define TIME_TO_SLEEP  10      
+
+float mensagem[6]; 
+int servoPosition = 90;
 Servo myServo;
+Ticker ticker;
 
-// Novo LED que será ativado caso a temperatura ultrapasse 50 graus
-/*
-#define LED_TEMP 13 
-*/
-
-// ################### Definindo os pinos dos LEDs externos
-/*
-#define LED_PIN1 25 // Pino digital onde o LED1 está conectado
-#define LED_PIN2 26 // Pino digital onde o LED2 está conectado
-#define LED_PIN3 27 // Pino digital onde o LED3 está conectado
-#define LED_PIN4 14 // Pino digital onde o LED4 está conectado
-*/
-
-// Resistores para divisor de tensão
-const float R1 = 34000.0; //33k
-const float R2 = 9800.0;  //10k
-
-// Variáveis globais
-float mensagem[6]; // Vetor para os valores LDRs, Temperatura e Tensão
-unsigned long lastReadTime = 0; // Armazena o último momento de leitura dos sensores
-unsigned long readInterval = 100; // Intervalo para leitura dos sensores (em milissegundos)
-int servoPosition = 90; // Posição inicial do servo (centro)
-
-void conectarWiFi() {
-    if (WiFi.status() == WL_CONNECTED) {
-        // Já está conectado, não tenta conectar novamente
-        return;
-    }
-
+void connectToWiFi() {
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.println("Conectando ao Wi-Fi...");
-    unsigned long startAttemptTime = millis();
-    
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) { // Tenta por 10 segundos
-        delay(500);
+    Serial.print("Conectando ao WiFi");
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
         Serial.print(".");
+        delay(500);
+        attempts++;
     }
-    
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("\nFalha ao conectar ao Wi-Fi!");
-        return;
-    }
-    
-    Serial.println("\nConectado ao Wi-Fi!");
-}
-
-// Definições para sincronização de horário
-#define GMT_OFFSET -3 * 3600 // Fuso horário de Brasília (GMT-3)
-#define DAYLIGHT_OFFSET 0    // Sem horário de verão
-#define NTP_SERVER "pool.ntp.org" // Servidor NTP
-
-void imprimirMensagem(float mensagem[]){
-  Serial.print("LDRs: ");
-  Serial.print(mensagem[0]);
-  Serial.print(" ");
-  Serial.print(mensagem[1]);
-  Serial.print(" ");
-  Serial.print(mensagem[2]);
-  Serial.print(" ");
-  Serial.print(mensagem[3]);
-  Serial.print(" | Temperatura: ");
-  Serial.print(mensagem[4], 2);
-  Serial.print("C | Tensao: ");
-  Serial.print(mensagem[5], 2);
-  Serial.println("V");}
-void setup() {
-  // Inicializa a comunicação serial para depuração
-  Serial.begin(115200);
-
-  // Conecta ao Wi-Fi
-  conectarWiFi();
-
-  // Inicializa o Firebase
-  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
-
-  configTime(GMT_OFFSET, DAYLIGHT_OFFSET, NTP_SERVER);
-  Serial.println("Sincronizando horário...");
-  struct tm timeinfo;
-  while (!getLocalTime(&timeinfo)) {
-      Serial.println("Falha ao obter tempo!");
-      delay(1000);
-  }
-  Serial.println("Horário sincronizado!");
-
-  // Configura os pinos dos LEDs como saída (se ainda forem usados)
-  /*
-  pinMode(LED_PIN1, OUTPUT);
-  pinMode(LED_PIN2, OUTPUT);1
-  pinMode(LED_PIN3, OUTPUT);
-  pinMode(LED_PIN4, OUTPUT);
-  */
-
-  // Configura os pinos dos sensores como entrada
-  pinMode(LDR_PIN1, INPUT);
-  pinMode(LDR_PIN2, INPUT);
-  pinMode(LDR_PIN3, INPUT);
-  pinMode(LDR_PIN4, INPUT);
-  pinMode(NTC_PIN, INPUT);
-  pinMode(VOLTAGE_PIN, INPUT);
-
-  // Inicializa o servo
-  myServo.attach(SERVO_PIN);
+    Serial.println(WiFi.status() == WL_CONNECTED ? "\nWiFi Conectado!" : "\nFalha ao conectar!");
 }
 
 void loop() {
-    lerSensores(); // Lê os sensores
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi desconectado! Tentando reconectar...");
+        connectToWiFi();
+    }
+    delay(1000);
+}
 
-    // Obter o horário atual
+void setup() {
+    pinMode(LDR_PIN1, INPUT);
+    pinMode(LDR_PIN2, INPUT);
+    pinMode(LDR_PIN3, INPUT);
+    pinMode(LDR_PIN4, INPUT);
+    pinMode(NTC_PIN, INPUT);
+    pinMode(VOLTAGE_PIN, INPUT);
+    pinMode(LED_PIN, OUTPUT);
+
+    Serial.begin(115200);
+    delay(1000);
+    connectToWiFi();
+    myServo.attach(SERVO_PIN);
+    myServo.write(servoPosition);
+
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+    Serial.println("Conectado ao Firebase!");
+
+    ticker.attach(10, readSensors);
+    // Configura o fuso horário e os servidores NTP (exemplo para GMT-3)
+    configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+
+    // Aguarda alguns segundos para sincronizar a hora
+    struct tm timeinfo;
+    int tentativas = 0;
+    while (!getLocalTime(&timeinfo) && tentativas < 10) {
+      Serial.println("Obtendo hora...");
+      delay(1000);
+      tentativas++;
+    }
+    if(tentativas >= 10) {
+      Serial.println("Falha ao sincronizar a hora");
+    }else {
+      Serial.println("Hora sincronizada com sucesso");
+    }
+}
+
+void readSensors() {
+    int ldrValue1 = analogRead(LDR_PIN1);
+    int ldrValue2 = analogRead(LDR_PIN2);
+    int ldrValue3 = analogRead(LDR_PIN3);
+    int ldrValue4 = analogRead(LDR_PIN4);
+    float temperatura = lerNTC(NTC_PIN);
+    float tensao = lerTensao(VOLTAGE_PIN);
+
+    mensagem[0] = (ldrValue1 < 600) ? 0 : 1;
+    mensagem[1] = (ldrValue2 < 600) ? 0 : 1;
+    mensagem[2] = (ldrValue3 < 600) ? 0 : 1;
+    mensagem[3] = (ldrValue4 < 600) ? 0 : 1;
+    mensagem[4] = temperatura;
+    mensagem[5] = tensao;
+
+    Serial.printf("LDRs: %d %d %d %d | Temp: %.2f°C | Tensão: %.2fV\n",
+                  (int)mensagem[0], (int)mensagem[1], (int)mensagem[2], (int)mensagem[3], mensagem[4], mensagem[5]);
+
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
-        Serial.println("Erro ao obter o tempo!");
+        Serial.println("Falha ao obter a hora atual");
         return;
     }
-    char timestampStr[30];
-    strftime(timestampStr, sizeof(timestampStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
 
-    StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& data = jsonBuffer.createObject();
+    char dia[11], horario[9];
+    strftime(dia, sizeof(dia), "%Y-%m-%d", &timeinfo);
+    strftime(horario, sizeof(horario), "%H:%M:%S", &timeinfo);
 
-    data["ldr1"] = mensagem[0];
-    data["ldr2"] = mensagem[1];
-    data["ldr3"] = mensagem[2];
-    data["ldr4"] = mensagem[3];
-    data["temperature"] = mensagem[4];
-    data["voltagem"] = mensagem[5];
-    data["timestamp"] = timestampStr;  // Mantendo o timestamp no mesmo formato
-    // Converter para string JSON
-    String jsonString;
-    data.printTo(jsonString);
-    // Enviar para o Firebase com push (gera um ID único)
-    if (Firebase.pushString("sensores", jsonString)) {
-        Serial.println("Dados enviados ao Firebase com sucesso!");
-    } else {
-        Serial.print("Erro ao enviar dados: ");
-        Serial.println(Firebase.error());
-    }
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/LDR1", mensagem[0]);
+    Serial.println("Envio LDR1 realizado");
+    Serial.println(mensagem[0]);
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/LDR2", mensagem[1]);
+    Serial.println("Envio LDR2 realizado");
+    Serial.println(mensagem[1]);
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/LDR3", mensagem[2]);
+    Serial.println("Envio LDR3 realizado");
+    Serial.println(mensagem[2]);
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/LDR4", mensagem[3]);
+    Serial.println("Envio LDR4 realizado");
+    Serial.println(mensagem[3]);
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/temp", mensagem[4]);
+    Serial.println("Envio temp realizado");
+    Serial.println(mensagem[4]);
+    Firebase.setFloat("/Leituras/" + String(dia) + "/" + String(horario) + "/tensao", mensagem[5]);
+    Serial.println("Envio /tensão realizado");
+    Serial.println(mensagem[5]);
 
-    imprimirMensagem(mensagem);
-    delay(5000); // Aguarda 2 segundos antes da próxima leitura
+    delay(2000);
+    digitalWrite(LED_PIN, HIGH);
+    delay(1000);
+    digitalWrite(LED_PIN, LOW);
+
+    /*
+    Serial.println("Entrando em modo de sono profundo...");
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+    */
 }
 
 float lerNTC(int pin) {
@@ -182,13 +167,4 @@ float lerTensao(int pin) {
   float voltage = rawValue * (3.3 / 4095.0); // Converte o valor lido para tensão
   float realVoltage = voltage * ((R1 + R2) / R2); // Converte a tensão medida para a tensão real da fonte
   return realVoltage;
-}
-
-void lerSensores() {
-    mensagem[0] = (analogRead(LDR_PIN1) < THRESHOLD) ? 0 : 1;
-    mensagem[1] = (analogRead(LDR_PIN2) < THRESHOLD) ? 0 : 1;
-    mensagem[2] = (analogRead(LDR_PIN3) < THRESHOLD) ? 0 : 1;
-    mensagem[3] = (analogRead(LDR_PIN4) < THRESHOLD) ? 0 : 1;
-    mensagem[4] = lerNTC(NTC_PIN);
-    mensagem[5] = lerTensao(VOLTAGE_PIN);
 }
