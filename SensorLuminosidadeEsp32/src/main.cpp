@@ -1,64 +1,74 @@
+// Importação de bibliotecas
 #include <Arduino.h>
-#include "secrets.h"
+#include "Secrets.h"
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "WiFi.h" // Biblioteca para conexão Wi-Fi
+#include <ESP32Servo.h>
 
-// Configurações de Wi-Fi
-//const char* ssid = "Jlucas"; // Insira o nome da rede Wi-Fi
-//const char* password = "jlucas2002"; // Insira a senha da rede Wi-Fi
-
+// Definições de Tópicos e Sensores
 #define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
 #define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
+#define LDR_PIN1 34
+#define LDR_PIN2 35
+#define LDR_PIN3 32
+#define LDR_PIN4 33
+#define THRESHOLD 600
+#define NTC_PIN 39
+#define VOLTAGE_PIN 36
+#define SERVO_PIN 14
 
-// Definindo os pinos dos LDRs e o limiar de sombra
-#define LDR_PIN1 34 // Pino de entrada analógica para o LDR1 era 34
-#define LDR_PIN2 35 // Pino de entrada analógica para o LDR2
-#define LDR_PIN3 32 // Pino de entrada analógica para o LDR3
-#define LDR_PIN4 33 // Pino de entrada analógica para o LDR4
-#define THRESHOLD 700 // Limiar para diferenciar luz de sombra
+// Novo LED que será ativado caso a temperatura ultrapasse 50 graus
+/*
+#define LED_TEMP 13 
+*/
 
-// Definindo os pinos dos LEDs externos
+// ################### Definindo os pinos dos LEDs externos
+/*
 #define LED_PIN1 25 // Pino digital onde o LED1 está conectado
 #define LED_PIN2 26 // Pino digital onde o LED2 está conectado
 #define LED_PIN3 27 // Pino digital onde o LED3 está conectado
 #define LED_PIN4 14 // Pino digital onde o LED4 está conectado
-//#define LED_TEMP 13 // Novo LED que será ativado caso a temperatura ultrapasse 50 graus
+*/
 
-// Definição do pino do sensor NTC (termistor)
-#define NTC_PIN 39 // Pino analógico onde o NTC está conectado
-
-// Pino para leitura da tensão
-#define VOLTAGE_PIN 36
-
-WiFiClientSecure net = WiFiClientSecure();
+WiFiClientSecure net;
 PubSubClient client(net);
+Servo myServo;
 
-//Definindo resistores para o divisor de tensao
-const float R1 = 34000.0;//33k
-const float R2 = 9800.0;//10k
+// Resistores para divisor de tensão
+const float R1 = 34000.0; //33k
+const float R2 = 9800.0;  //10k
+
+// Variáveis globais
 float mensagem[6]; // Vetor para os valores LDRs, Temperatura e Tensão
-
-// Variáveis para controle de tempo
 unsigned long lastReadTime = 0; // Armazena o último momento de leitura dos sensores
 unsigned long readInterval = 100; // Intervalo para leitura dos sensores (em milissegundos)
+int servoPosition = 90; // Posição inicial do servo (centro)
 
+//###################################### CONEXÃO ######################################
 void conectarWiFi() {
+    if (WiFi.status() == WL_CONNECTED) {
+        // Já está conectado, não tenta conectar novamente
+        return;
+    }
+
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.println("Conectando ao Wi-Fi...");
     unsigned long startAttemptTime = millis();
+    
     while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) { // Tenta por 10 segundos
         delay(500);
         Serial.print(".");
     }
+    
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("\nFalha ao conectar ao Wi-Fi!");
         return;
     }
+    
     Serial.println("\nConectado ao Wi-Fi!");
 }
-
 
 void connectAWS() {
   conectarWiFi();
@@ -68,14 +78,14 @@ void connectAWS() {
   net.setPrivateKey(AWS_CERT_PRIVATE);
   
   client.setServer(AWS_IOT_ENDPOINT, 8883);
-  //client.setCallback(messageHandler);
+  client.setCallback(messageHandler);
   
   Serial.println("Conectando ao AWS IoT...");
-while (!client.connect(THINGNAME)) {
-  Serial.print("Falha ao conectar. Estado: ");
-  Serial.println(client.state());
-  delay(1000);
-}
+  while (!client.connect(THINGNAME)) {
+    Serial.print("Falha ao conectar. Estado: ");
+    Serial.println(client.state());
+    delay(1000);
+  }
   
   if (!client.connected()) {
     Serial.println("Falha ao conectar no AWS IoT!");
@@ -84,6 +94,15 @@ while (!client.connect(THINGNAME)) {
   
   client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
   Serial.println("Conectado ao AWS IoT e inscrito no tópico!");
+}//#####################################################################################
+
+void lerSensores() {
+    mensagem[0] = (analogRead(LDR_PIN1) < THRESHOLD) ? 0 : 1;
+    mensagem[1] = (analogRead(LDR_PIN2) < THRESHOLD) ? 0 : 1;
+    mensagem[2] = (analogRead(LDR_PIN3) < THRESHOLD) ? 0 : 1;
+    mensagem[3] = (analogRead(LDR_PIN4) < THRESHOLD) ? 0 : 1;
+    mensagem[4] = lerNTC(NTC_PIN);
+    mensagem[5] = lerTensao(VOLTAGE_PIN);
 }
 
 void publishMessage(float mensagem[]) {
@@ -106,15 +125,82 @@ void publishMessage(float mensagem[]) {
   Serial.println(jsonBuffer); // Imprime o JSON enviado para o console
 }
 
-//metodo para receber mensagens da aws
-void messageHandler(char* topic, byte* payload, unsigned int length){
-  Serial.print("incoming: ");
-  Serial.println(topic);
- 
-  StaticJsonDocument<200> doc;
-  deserializeJson(doc, payload);
-  const char* message = doc["message"];
-  Serial.println(message);
+void processarComando(const char* comando) {
+    if (strcmp(comando, "Direita") == 0) {
+        moverDireita();
+    } else if (strcmp(comando, "Esquerda") == 0) {
+        moverEsquerda();
+    } else {
+        Serial.println("Comando desconhecido.");
+    }
+}
+
+// Método para receber mensagens da AWS
+void messageHandler(char* topic, byte* payload, unsigned int length) {
+    Serial.print("Mensagem recebida no tópico: ");
+    Serial.println(topic);
+
+    // Converte o payload para uma string
+    String message = String((char*)payload).substring(0, length);
+
+    // Processa o JSON
+    processJsonMessage(message);
+}
+
+// Processa a mensagem JSON recebida
+void processJsonMessage(const String& message) {
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, message);
+    if (error) {
+        Serial.print("Erro ao processar JSON: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    // Verifica o comando no JSON
+    const char* comando = doc["message"];
+    if (comando) {
+        Serial.print("Comando recebido: ");
+        Serial.println(comando);
+        executarComando(comando);
+    } else {
+        Serial.println("Mensagem não contém a chave 'message'.");
+    }
+}
+
+// Executa o comando recebido
+void executarComando(const char* comando) {
+    if (strcmp(comando, "Direita") == 0) {
+        moverDireita();
+    } else if (strcmp(comando, "Esquerda") == 0) {
+        moverEsquerda();
+    } else {
+        Serial.println("Comando desconhecido.");
+    }
+}
+
+// Movimenta o servo para a direita
+void moverDireita() {
+    if (servoPosition < 180) {
+        servoPosition += 10; // Incrementa o ângulo
+        myServo.write(servoPosition);
+        Serial.println("Movendo para a direita.");
+        delay(500); // Pausa para evitar movimentos rápidos
+    } else {
+        Serial.println("Já na posição máxima (Direita).");
+    }
+}
+
+// Movimenta o servo para a esquerda
+void moverEsquerda() {
+    if (servoPosition > 0) {
+        servoPosition -= 10; // Decrementa o ângulo
+        myServo.write(servoPosition);
+        Serial.println("Movendo para a esquerda.");
+        delay(500); // Pausa para evitar movimentos rápidos
+    } else {
+        Serial.println("Já na posição mínima (Esquerda).");
+    }
 }
 
 float lerNTC(int pin) {
@@ -138,7 +224,6 @@ float lerTensao(int pin) {
   return realVoltage;
 }
 
-
 void imprimirMensagem(float mensagem[]){
   Serial.print("LDRs: ");
   Serial.print(mensagem[0]);
@@ -154,20 +239,26 @@ void imprimirMensagem(float mensagem[]){
   Serial.print(mensagem[5], 2);
   Serial.println("V");
 
-  //atraso de 2 seg
-  //delay(2000);
+  // Atraso de 2 seg
+  // delay(2000);
 }
 
 void setup() {
   // Conecta ao Wi-Fi
-  //conectarWiFi();
+  // conectarWiFi();
 
   // Define os pinos dos LEDs como saída
+  /*
   pinMode(LED_PIN1, OUTPUT);
   pinMode(LED_PIN2, OUTPUT);
   pinMode(LED_PIN3, OUTPUT);
   pinMode(LED_PIN4, OUTPUT);
-  //pinMode(LED_TEMP, OUTPUT); // Configura o pino do LED de temperatura como saída
+  */
+
+  // Configura o pino do LED de temperatura como saída
+  /*
+  pinMode(LED_TEMP, OUTPUT); 
+  */
 
   // Define os pinos dos LDRs como entrada
   pinMode(LDR_PIN1, INPUT);
@@ -184,6 +275,10 @@ void setup() {
   // Inicializa a comunicação serial para depuração
   Serial.begin(115200);
   connectAWS();
+
+  // Inicializa o servo motor
+  myServo.attach(SERVO_PIN);
+  myServo.write(servoPosition); // Posiciona o servo no centro
 }
 
 void loop() {
@@ -208,6 +303,8 @@ void loop() {
     mensagem[4] = temperatura;
     mensagem[5] = tensao;
 
+
+/*
     if (mensagem[0] == 0) {
       digitalWrite(LED_PIN1, HIGH);
     } else {
@@ -231,20 +328,21 @@ void loop() {
     } else {
       digitalWrite(LED_PIN4, LOW);
     }
+  */
 
-  // Verifica se a temperatura está acima de 50 graus Celsius
-  /*if (temperatura > 50.0) { 
-    digitalWrite(LED_TEMP, HIGH); // Liga o LED de temperatura
-  } else {
-    digitalWrite(LED_TEMP, LOW); // Desliga o LED de temperatura
-  }*/
+    // Verifica se a temperatura está acima de 50 graus Celsius
+    /*if (temperatura > 50.0) { 
+      digitalWrite(LED_TEMP, HIGH); // Liga o LED de temperatura
+    } else {
+      digitalWrite(LED_TEMP, LOW); // Desliga o LED de temperatura
+    }*/
 
-  // Imprime o vetor no console serial para depuração
-  imprimirMensagem(mensagem);
+    // Imprime o vetor no console serial para depuração
+    imprimirMensagem(mensagem);
 
-  //manda a mensgem para azure
-  publishMessage(mensagem);
-  client.loop();
-  delay(4000);
+    // Manda a mensagem para AWS
+    publishMessage(mensagem);
+    client.loop();
+    delay(10000);
   }
 }
